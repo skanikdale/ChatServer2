@@ -10,8 +10,11 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.Socket;
+import java.net.UnknownHostException;
 import java.util.StringTokenizer;
 import java.util.Vector;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import javax.swing.JList;
 import javax.swing.JOptionPane;
 import javax.swing.JTextArea;
@@ -25,40 +28,53 @@ class ChatClientConnector {
     
     public static final int PORT = 10;
     
-    ChatClientConnector() throws IOException {
-        
-        s = new Socket(InetAddress.getByName("skanikdale2l"), PORT);
-        this.dis = new DataInputStream(this.s.getInputStream());
-        this.dos = new DataOutputStream(this.s.getOutputStream());
+    ChatClientConnector() throws IOException  {
+        startSocketConnection();
     }
     
-    public void clientChat(String string) {
+    private void startSocketConnection() throws UnknownHostException, IOException {
+
+        if (s == null) {
+            s = new Socket(InetAddress.getByName("skanikdale2l"), PORT);
+            this.dis = new DataInputStream(this.s.getInputStream());
+            this.dos = new DataOutputStream(this.s.getOutputStream());
+        }
+    }
+    
+    public void sendClientMsg(String msg) throws IOException {
+        
+        startSocketConnection();
 
         try {
-            this.dos.writeUTF(string);
+            this.dos.writeUTF(msg);
         }
         catch (Exception e) {
-            System.out.println("clientChat expection:: " + e);
+            System.out.println("sendClientMsg expection:: " + e);
         }
     }
     
-    public void logoutSession() {
+    public void logoutSession() throws IOException {
         if (this.s == null) {
             return;
         }
         try {
-            this.dos.writeUTF("#logout");
+            sendClientMsg("logout");
             Thread.sleep(500);
+            
+            this.dis.close();
+            this.dos.close();
+            this.s.close();
+            
             this.s = null;
         }
-        catch (Exception e) {
+        catch (InterruptedException e) {
             System.out.println("logoutSession expection:: " + e);
         }
     }
 }
 
 class ClientThread implements Runnable {
-    DataInputStream dis;
+    DataInputStream dis; 
     ChatUI client;
 
     ClientThread(DataInputStream dataInputStream, ChatUI myClient) {
@@ -68,39 +84,46 @@ class ClientThread implements Runnable {
 
     @Override
     public void run() {
-        String string;
 
-        block2:
+        String string = "";
+
         do {
+
             try {
-                do {
-                    if ((string = this.dis.readUTF()).startsWith("updateuserslist:")) {
-                        this.updateUsersList(string);
-                    } else {
-                        if (string.equals("#logout")) {
-                            break block2;
-                        }
-                        
-                        /* Put message in text area window. */
-                        this.client.getBroadcastTextArea().append("\n" + string);
-                    }
-                    
-                    int n = this.client.getBroadcastTextArea().getLineStartOffset(this.client.getBroadcastTextArea().getLineCount() - 1);
-                    this.client.getBroadcastTextArea().setCaretPosition(n);
-                    
-                } while (true);
-            } catch (IOException | BadLocationException e) {
-                this.client.getBroadcastTextArea().append("\nClientThread run : " + e);
+                string = this.dis.readUTF();
+            } catch (IOException ex) {
+                Logger.getLogger(ClientThread.class.getName()).log(Level.SEVERE, null, ex);
+            }
+
+            if (string.startsWith("updateuserslist:")) {
+                this.updateUsersList(string);
+            } else if (string.startsWith("logout")) {
+                break;
+            } else {
+
+                /* Put message in text area window. */
+                this.client.getBroadcastTextArea().append("\n" + string);
+
+                int n = 0;
+                try {
+                    n = this.client.getBroadcastTextArea().getLineStartOffset(this.client.getBroadcastTextArea().getLineCount() - 1);
+                } catch (BadLocationException ex) {
+                    Logger.getLogger(ClientThread.class.getName()).log(Level.SEVERE, null, ex);
+                }
+
+                this.client.getBroadcastTextArea().setCaretPosition(n);
             }
         } while (true);
     }
 
     public void updateUsersList(String string) {
+        
         Vector<String> vector = new Vector<String>();
         
         string = string.replace("[", "");
         string = string.replace("]", "");
         string = string.replace("updateuserslist:", "");
+        
         StringTokenizer stringTokenizer = new StringTokenizer(string, ",");
 
         while (stringTokenizer.hasMoreTokens()) {
@@ -111,7 +134,6 @@ class ClientThread implements Runnable {
         this.client.getUsersList().setListData(vector);
     }
 }
-
 
 /**
  *
@@ -129,7 +151,7 @@ public class ChatUI extends javax.swing.JFrame {
         initComponents();
         this.conn = conn;
         
-        this.setTitle("Chat Messenger !");
+        this.setTitle("Login to chat");
     }
     
     public JTextArea getUserTextArea() {
@@ -263,7 +285,13 @@ public class ChatUI extends javax.swing.JFrame {
     private void jButtonLoginActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_jButtonLoginActionPerformed
 
         String userName = JOptionPane.showInputDialog(this, (Object) "Enter your name: ");
-        this.conn.clientChat(userName);
+        
+        try {
+            // Inform client about user's name
+            this.conn.sendClientMsg(userName);
+        } catch (IOException ex) {
+            Logger.getLogger(ChatUI.class.getName()).log(Level.SEVERE, null, ex);
+        }
 
         ClientThread clientThread = new ClientThread(this.conn.dis, this);
         Thread thread = new Thread(clientThread);
@@ -276,7 +304,12 @@ public class ChatUI extends javax.swing.JFrame {
 
     private void jButtonLogoutActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_jButtonLogoutActionPerformed
 
-        this.conn.logoutSession();
+        try {
+            this.conn.logoutSession();
+        } catch (IOException ex) {
+            Logger.getLogger(ChatUI.class.getName()).log(Level.SEVERE, null, ex);
+        }
+        
         this.jButtonLogout.setEnabled(false);
         this.jButtonLogin.setEnabled(true);
         this.setTitle("Login for Chat");
@@ -290,15 +323,17 @@ public class ChatUI extends javax.swing.JFrame {
         }
 
         try {
-            this.conn.dos.writeUTF(this.jTextUserMsg.getText());
-            this.jTextUserMsg.setText("");
-        } catch (Exception e) {
-            this.jTextBroadCastMsg.append("\nSend button click exception :" + e);
+            this.conn.sendClientMsg(this.jTextUserMsg.getText());
+        } catch (IOException ex) {
+            Logger.getLogger(ChatUI.class.getName()).log(Level.SEVERE, null, ex);
         }
+        
+        this.jTextUserMsg.setText("");
     }//GEN-LAST:event_jButtonSubmitActionPerformed
 
     /**
      * @param args the command line arguments
+     * @throws java.io.IOException
      */
     public static void main(String args[]) throws IOException {
         /* Set the Nimbus look and feel */
@@ -328,6 +363,8 @@ public class ChatUI extends javax.swing.JFrame {
 
         /* Create and display the form */
         java.awt.EventQueue.invokeLater(new Runnable() {
+            
+            @Override
             public void run() {
                 new ChatUI(conn).setVisible(true);
             }
